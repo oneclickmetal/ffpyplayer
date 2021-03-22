@@ -308,7 +308,7 @@ cdef class MediaPlayer(object):
         settings.screen_height = ff_opts['y'] if 'y' in ff_opts else 0
         if not CONFIG_AVFILTER and (settings.screen_width or settings.screen_height):
             raise Exception('You can only set the screen size when avfilter is enabled.')
-        settings.audio_disable = bool(ff_opts['an']) if 'an' in ff_opts else 0
+        settings.audio_disable = True
         settings.video_disable = bool(ff_opts['vn']) if 'vn' in ff_opts else 0
         settings.subtitle_disable = bool(ff_opts['sn']) if 'sn' in ff_opts else 0
 
