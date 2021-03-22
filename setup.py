@@ -50,9 +50,9 @@ c_options = {
     'config_avfilter': True,
     'config_avdevice': True,
     'config_swscale': True,
-    'config_rtsp_demuxer': True,
-    'config_mmsh_protocol': True,
-    'config_postproc': platform != 'win32',
+    'config_rtsp_demuxer': False,
+    'config_mmsh_protocol': False,
+    'config_postproc': False,
     # whether sdl is included as an option
     'config_sdl': True, # not implemented yet
     'has_sdl2': False,
