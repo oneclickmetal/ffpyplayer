@@ -1,17 +1,9 @@
+from setuptools import setup, Extension
 from os.path import join, exists, isdir, dirname, abspath
 from os import environ, listdir, mkdir
 from distutils.command.build_ext import build_ext
 import sys
 import ffpyplayer
-
-
-try:
-    from setuptools import setup, Extension
-    print('Using setuptools')
-except ImportError:
-    from distutils.core import setup
-    from distutils.extension import Extension
-    print('Using distutils')
 
 
 # Determine on which platform we are
@@ -43,6 +35,7 @@ else:
     declare_cython = True
 
 src_path = build_path = dirname(__file__)
+print(f'Source/build path: {src_path}')
 
 # select which ffmpeg libraries will be available
 c_options = {
@@ -55,7 +48,7 @@ c_options = {
     'config_postproc': False,
     # whether sdl is included as an option
     'config_sdl': True, # not implemented yet
-    'has_sdl2': False,
+    'has_sdl2': True,
     'use_sdl2_mixer': False,
     # these should be true
     'config_avutil':True,
@@ -65,6 +58,9 @@ c_options = {
 }
 
 for key in list(c_options.keys()):
+    if key == 'has_sdl2':
+        continue
+
     ukey = key.upper()
     if ukey in environ:
         value = bool(int(environ[ukey]))
@@ -112,6 +108,7 @@ class FFBuildExt(build_ext, object):
         if (self.build_lib is not None and exists(self.build_lib) and
                 not self.inplace):
             build_path = self.build_lib
+            print(f'Build path changed to: {src_path}')
         return retval
 
     def build_extensions(self):
@@ -198,7 +195,6 @@ if "KIVYIOSROOT" in environ:
     include_dirs = [
         environ.get("SDL_INCLUDE_DIR"),
         environ.get("FFMPEG_INCLUDE_DIR")]
-    sdl = "SDL2"
 
 elif "NDKPLATFORM" in environ:
     # enable python-for-android/py4a compilation
@@ -217,18 +213,14 @@ elif "NDKPLATFORM" in environ:
     # sdl:
     sdl_lib, sdl_include = get_paths('SDL')
     if sdl_lib and sdl_include:
-        sdl = 'SDL2'
-        libraries.append(sdl)
+        libraries.append('SDL2')
         library_dirs.append(sdl_lib)
         include_dirs.append(sdl_include)
     else:  # old toolchain
-        sdl = 'sdl'
-        libraries.append(sdl)
-        if sdl_lib: library_dirs.append(sdl_lib)
-        if sdl_include: include_dirs.append(sdl_include)
+        raise ValueError('SDL2 not found')
 
     # sdl2 mixer:
-    c_options['use_sdl2_mixer'] = c_options['use_sdl2_mixer'] and sdl == 'SDL2'
+    c_options['use_sdl2_mixer'] = c_options['use_sdl2_mixer']
     if c_options['use_sdl2_mixer']:
         _, mixer_include = get_paths('SDL2_MIXER')
         libraries.append('SDL2_mixer')
@@ -263,28 +255,20 @@ else:
     # sdl
     sdl_lib, sdl_include = get_paths('SDL')
 
-    sdl = 'SDL2'
     flags = {}
     if sdl_lib is None and sdl_include is None:
         flags = pkgconfig('sdl2')
-        if not flags:
-            flags = pkgconfig('sdl')
-            if flags:
-                sdl = 'SDL'
-    elif sdl_include is not None and not isdir(join(sdl_include, 'SDL2')):
-        sdl = 'SDL'
-    print('Selecting %s out of (SDL, SDL2)' % sdl)
 
     sdl_libs = flags.get('library_dirs', []) if sdl_lib is None \
         else [sdl_lib]
     sdl_includes = flags.get('include_dirs', []) if sdl_include is None \
-        else [join(sdl_include, sdl)]
+        else [join(sdl_include, 'SDL2'), sdl_include]
 
     library_dirs.extend(sdl_libs)
     include_dirs.extend(sdl_includes)
-    libraries.extend(flags.get('libraries', [sdl]))
+    libraries.extend(flags.get('libraries', ['SDL2']))
 
-    c_options['use_sdl2_mixer'] = c_options['use_sdl2_mixer'] and sdl == 'SDL2'
+    c_options['use_sdl2_mixer'] = c_options['use_sdl2_mixer']
     if c_options['use_sdl2_mixer']:
         flags = {}
         if sdl_lib is None and sdl_include is None:
@@ -321,8 +305,7 @@ def get_wheel_data():
 mods = [
     'pic', 'threading', 'tools', 'writer', 'player/clock', 'player/core',
     'player/decoder', 'player/frame_queue', 'player/player', 'player/queue']
-c_options['has_sdl2'] = sdl == 'SDL2'
-c_options['use_sdl2_mixer'] = c_options['use_sdl2_mixer'] and sdl == 'SDL2'
+c_options['use_sdl2_mixer'] = c_options['use_sdl2_mixer']
 
 
 if can_use_cython:
@@ -398,29 +381,33 @@ if declare_cython:
 setup(name='ffpyplayer',
       version=ffpyplayer.__version__,
       author='Matthew Einhorn',
+      author_email='matt@einhorn.dev',
       license='LGPL3',
       description='A cython implementation of an ffmpeg based player.',
       url='https://matham.github.io/ffpyplayer/',
       long_description=long_description,
-      classifiers=['License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)',
-                   'Topic :: Multimedia :: Video',
-                   'Topic :: Multimedia :: Video :: Display',
-                   'Topic :: Multimedia :: Sound/Audio :: Players',
-                   'Topic :: Multimedia :: Sound/Audio :: Players :: MP3',
-                   'Programming Language :: Python :: 3.5',
-                   'Programming Language :: Python :: 3.6',
-                   'Programming Language :: Python :: 3.7',
-                   'Programming Language :: Python :: 3.8',
-                   'Operating System :: MacOS :: MacOS X',
-                   'Operating System :: Microsoft :: Windows',
-                   'Operating System :: POSIX :: BSD :: FreeBSD',
-                   'Operating System :: POSIX :: Linux',
-                   'Intended Audience :: Developers'],
+      classifiers=[
+        'License :: OSI Approved :: GNU Lesser General Public License v3 '
+        '(LGPLv3)',
+        'Topic :: Multimedia :: Video',
+        'Topic :: Multimedia :: Video :: Display',
+        'Topic :: Multimedia :: Sound/Audio :: Players',
+        'Topic :: Multimedia :: Sound/Audio :: Players :: MP3',
+        'Programming Language :: Python :: 3.7',
+        'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
+        'Operating System :: MacOS :: MacOS X',
+        'Operating System :: Microsoft :: Windows',
+        'Operating System :: POSIX :: BSD :: FreeBSD',
+        'Operating System :: POSIX :: Linux',
+        'Intended Audience :: Developers'],
       packages=['ffpyplayer', 'ffpyplayer.player', 'ffpyplayer.tests'],
       package_data={
         'ffpyplayer': [
             'player/*.pxd', 'clib/misc.h', 'includes/*.pxi', 'includes/*.h',
-            '*.pxd']},
+            '*.pxd', 'player/*.pyx', 'clib/misc.c', '*.pyx']},
       data_files=get_wheel_data(),
       cmdclass=cmdclass, ext_modules=ext_modules,
       setup_requires=setup_requires)

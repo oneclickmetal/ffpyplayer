@@ -14,7 +14,7 @@ __all__ = (
     'get_supported_framerates', 'get_supported_pixfmts', 'get_best_pix_fmt',
     'emit_library_info',
     'list_dshow_devices', 'encode_to_bytes', 'decode_to_unicode',
-    'convert_to_str')
+    'convert_to_str', 'list_dshow_opts')
 
 include "includes/ffmpeg.pxi"
 include "includes/inline_funcs.pxi"
@@ -41,10 +41,7 @@ def initialize_sdl_aud():
     # Try to work around an occasional ALSA buffer underflow issue when the
     # period size is NPOT due to ALSA resampling by forcing the buffer size.
     if not SDL_getenv("SDL_AUDIO_ALSA_SET_BUFFER_SIZE"):
-        IF HAS_SDL2:
-            SDL_setenv("SDL_AUDIO_ALSA_SET_BUFFER_SIZE", "1", 0)
-        ELSE:
-            SDL_putenv("SDL_AUDIO_ALSA_SET_BUFFER_SIZE=1")
+        SDL_setenv("SDL_AUDIO_ALSA_SET_BUFFER_SIZE", "1", 0)
 
     if SDL_InitSubSystem(SDL_INIT_AUDIO):
         raise ValueError('Could not initialize SDL audio - %s' % SDL_GetError())
@@ -95,6 +92,7 @@ formats_out = get_fmts(output=True)[0]
 cdef object _log_callback = None
 cdef MTMutex _log_mutex= MTMutex(SDL_MT)
 cdef int log_level = AV_LOG_WARNING
+cdef int print_prefix = 1
 
 cdef void gil_call_callback(char *line, int level):
     cdef object callback
@@ -109,7 +107,6 @@ cdef void call_callback(char *line, int level) nogil:
 
 cdef void _log_callback_func(void* ptr, int level, const char* fmt, va_list vl) nogil:
     cdef char line[2048]
-    cdef int print_prefix = 1
     if fmt == NULL or level > log_level:
         return
 
@@ -265,7 +262,8 @@ cpdef get_codecs(
     '''
     cdef list codecs = []
     cdef AVCodec *codec = NULL
-    codec = av_codec_next(codec)
+    cdef void *iter_codec = NULL
+    codec = av_codec_iterate(&iter_codec)
 
     while codec != NULL:
         if ((encode and av_codec_is_encoder(codec) or
@@ -277,7 +275,7 @@ cpdef get_codecs(
              attachment and codec.type == AVMEDIA_TYPE_ATTACHMENT or
              other)):
             codecs.append(tcode(codec.name))
-        codec = av_codec_next(codec)
+        codec = av_codec_iterate(&iter_codec)
     return sorted(codecs)
 
 cdef list list_pixfmts():
@@ -317,10 +315,12 @@ cpdef get_fmts(int input=False, int output=False):
     cdef list fmts = [], full_names = [], exts = []
     cdef AVOutputFormat *ofmt = NULL
     cdef AVInputFormat *ifmt = NULL
+    cdef void *ifmt_opaque = NULL
+    cdef void *ofmt_opaque = NULL
     cdef object names, full_name, ext
 
     if output:
-        ofmt = av_oformat_next(ofmt)
+        ofmt = av_muxer_iterate(&ofmt_opaque)
         while ofmt != NULL:
             if ofmt.name != NULL:
                 names = tcode(ofmt.name).split(',')
@@ -330,10 +330,10 @@ cpdef get_fmts(int input=False, int output=False):
                 fmts.extend(names)
                 full_names.extend([full_name, ] * len(names))
                 exts.extend([ext, ] * len(names))
-            ofmt = av_oformat_next(ofmt)
+            ofmt = av_muxer_iterate(&ofmt_opaque)
 
     if input:
-        ifmt = av_iformat_next(ifmt)
+        ifmt = av_demuxer_iterate(&ifmt_opaque)
         while ifmt != NULL:
             if ifmt.name != NULL:
                 names = tcode(ifmt.name).split(',')
@@ -343,7 +343,7 @@ cpdef get_fmts(int input=False, int output=False):
                 fmts.extend(names)
                 full_names.extend([full_name, ] * len(names))
                 exts.extend([ext, ] * len(names))
-            ifmt = av_iformat_next(ifmt)
+            ifmt = av_demuxer_iterate(&ifmt_opaque)
 
     exts = [x for (y, x) in sorted(zip(fmts, exts), key=_get_item0)]
     full_names = [x for (y, x) in sorted(zip(fmts, full_names), key=_get_item0)]
@@ -595,14 +595,27 @@ def emit_library_info():
     print_all_libs_info(INDENT|SHOW_VERSION, AV_LOG_INFO)
 
 def _dshow_log_callback(log, message, level):
-    log.append((message.encode('utf8'), level))
+    message = message.encode('utf8')
 
-cdef int list_dshow_opts(list log, bytes stream, bytes option) except 1:
+    if not log:
+        log.append((message, level))
+        return
+
+    last_msg, last_level = log[-1]
+    if last_level == level:
+        log[-1] = last_msg + message, level
+    else:
+        log.append((message, level))
+
+
+cpdef int list_dshow_opts(list log, bytes stream, bytes option) except 1:
     cdef AVFormatContext *fmt = NULL
     cdef AVDictionary* opts = NULL
     cdef AVInputFormat *ifmt
     cdef object old_callback
     cdef int level
+    cdef list temp_log = []
+    cdef bytes item
     global log_level
 
     ifmt = av_find_input_format(b"dshow")
@@ -611,7 +624,7 @@ cdef int list_dshow_opts(list log, bytes stream, bytes option) except 1:
 
     av_dict_set(&opts, option, b"true", 0)
     _log_mutex.lock()
-    old_callback = set_log_callback(partial(_dshow_log_callback, log))
+    old_callback = set_log_callback(partial(_dshow_log_callback, temp_log))
     level = log_level
 
     av_log_set_level(AV_LOG_TRACE)
@@ -625,6 +638,10 @@ cdef int list_dshow_opts(list log, bytes stream, bytes option) except 1:
     _log_mutex.unlock()
     avformat_close_input(&fmt)
     av_dict_free(&opts)
+
+    for item, l in temp_log:
+        for line in item.splitlines():
+            log.append((line, l))
     return 0
 
 def list_dshow_devices():
@@ -689,116 +706,76 @@ def list_dshow_devices():
 
     # list devices
     list_dshow_opts(res, b'dummy', b'list_devices')
-    pvid = re.compile(' *\[dshow *@ *[\w]+\] *DirectShow video devices.*')
-    paud = re.compile(' *\[dshow *@ *[\w]+\] *DirectShow audio devices.*')
-    pname = re.compile(' *\[dshow *@ *[\w]+\] *"(.+)"\\n.*')
-    apname = re.compile(' *\[dshow *@ *[\w]+\] *Alternative name *"(.+)"\\n.*')
-    m = m2 = None
+    pname = re.compile(' *\[dshow *@ *[\w]+\] *"(.+)" *\\((video|audio)\\) *')
+    apname = re.compile(' *\[dshow *@ *[\w]+\] *Alternative name *"(.+)" *')
+    m = None
     for msg, level in res:
         message = msg.decode('utf8')
 
-        switched = False
-        # check whether we switch to audio/video opts
-        if pvid.match(message):
-            switched = True
-            curr = video
-        elif paud.match(message):
-            switched = True
-            curr = audio
-
         m_temp = pname.match(message)
-        # add the previous cams if exist
-        if curr is None or switched or m_temp:
-            assert not (m and m2)
-            if m:
-                curr[m.group(1)] = []
-                name_map[m.group(1)] = m.group(1)
-            elif m2:
-                curr[m2.group(1)] = []
-                name_map[m2.group(1)] = m2.group(1)
-            m = m2 = None
-
-        if curr is None:
-            av_log(NULL, loglevels[level], '%s', msg)
-            continue
-        elif switched:
-            continue
-
-        m2 = apname.match(message)
-        if m2:
-            if m:
-                curr[m2.group(1)] = []
-                name_map[m2.group(1)] = m.group(1)
-            else:
-                curr[m2.group(1)] = []
-                name_map[m2.group(1)] = m2.group(1)
-            m = m2 = None
-        else:
+        if m_temp:
             m = m_temp
-            if not m:
-                msg2 = message.encode('utf8')
-                av_log(NULL, loglevels[level], '%s', msg2)
-    if m:
-        curr[m.group(1)] = []
-        name_map[m.group(1)] = m.group(1)
+            curr = audio if m.group(2) == 'audio' else video
+            curr[m.group(1)] = []
+            name_map[m.group(1)] = m.group(1)
+            continue
+
+        m_temp = apname.match(message)
+        if m_temp and m:
+            curr[m_temp.group(1)] = []
+            name_map[m_temp.group(1)] = m.group(1)
+            del curr[m.group(1)]
+            del name_map[m.group(1)]
+        else:
+            msg2 = message.encode('utf8')
+            av_log(NULL, loglevels[level], '%s', msg2)
 
     # list video devices options
-    pvid_pix = re.compile(' *\[dshow *@ *[\w]+\] *pixel_format=([\w]+).*')
-    pvid_codec = re.compile(' *\[dshow *@ *[\w]+\] *vcodec=([\w]+).*')
-    pvid_opts = re.compile(' *\[dshow *@ *[\w]+\] *min +s=\d+x\d+ +fps=(\d+)\
+    vid_opts = re.compile(' *\[dshow *@ *[\w]+\] +(pixel_format|vcodec)=([\w]+) +min +s=\d+x\d+ +fps=(\d+)\
  +max +s=(\d+)x(\d+) +fps=(\d+).*')
-    pheader1 = re.compile(' *\[dshow *@ *[\w]+\] *Pin "(?:Capture|Output)".*')
+    pheader1 = re.compile(' *\[dshow *@ *[\w]+\] *(?:Pin|Selecting pin) (?:"Capture"|"Output"|Capture|Output).*')
     pheader2 = re.compile(' *\[dshow *@ *[\w]+\] *DirectShow (?:video|audio) (?:only )?device options.*')
     for video_stream in video:
         res = []
-        last = ()
         list_dshow_opts(res, ("video=%s" % video_stream).encode('utf8'), b'list_options')
 
         for msg, level in res:
-            message = msg.decode('utf8') if PY3 else msg
-            mpix = pvid_pix.match(message)
-            mcodec = pvid_codec.match(message)
-            mopts = pvid_opts.match(message)
+            message = msg.decode('utf8')
+            opts = vid_opts.match(message)
 
-            if mpix:
-                last = (mpix.group(1), '')
-            if mcodec:
-                last = ('', mcodec.group(1))
-            if mopts and not last:
-                av_log(NULL, loglevels[level], '%s', msg)
+            if not opts:
+                if not pheader1.match(message) and not pheader2.match(message):
+                    av_log(NULL, loglevels[level], '%s', msg)
                 continue
 
-            if mopts:
-                opts = (last[0], last[1], (int(mopts.group(2)), int(mopts.group(3))),
-                        (int(mopts.group(1)), int(mopts.group(4))))
-                if opts not in video[video_stream]:
-                    video[video_stream].append(opts)
-                last = ()
-            if (not mpix) and (not mcodec) and (not mopts) and\
-            (not pheader1.match(message)) and (not pheader2.match(message)):
-                av_log(NULL, loglevels[level], '%s', msg)
+            g1, g2, g3, g4, g5, g6 = opts.groups()
+            if g1 == 'pixel_format':
+                item = g2, "", (int(g4), int(g5)), (int(g3), int(g6))
+            else:
+                item = "", g2, (int(g4), int(g5)), (int(g3), int(g6))
 
-        video[video_stream] = sorted(list(set(video[video_stream])))
+            if item not in video[video_stream]:
+                video[video_stream].append(item)
+
+        video[video_stream] = sorted(video[video_stream])
 
     # list audio devices options
-    paud_opts = re.compile(' *\[dshow *@ *[\w]+\] *min +ch= *(\d+) +bits= *(\d+)\
- +rate= *(\d+) +max +ch= *(\d+) +bits= *(\d+) +rate= *(\d+).*')
+    paud_opts = re.compile(' *\[dshow *@ *[\w]+\] +ch= *(\d+), +bits= *(\d+),\
+ +rate= *(\d+).*')
     for audio_stream in audio:
         res = []
         list_dshow_opts(res, ("audio=%s" % audio_stream).encode('utf8'), b'list_options')
         for msg, level in res:
-            message = msg.decode('utf8') if PY3 else msg
+            message = msg.decode('utf8')
             mopts = paud_opts.match(message)
 
             if mopts:
-                opts = ((int(mopts.group(1)), int(mopts.group(4))),
-                        (int(mopts.group(2)), int(mopts.group(5))),
-                        (int(mopts.group(3)), int(mopts.group(6))))
+                opts = (int(mopts.group(1)), int(mopts.group(2)), int(mopts.group(3)))
                 if opts not in audio[audio_stream]:
                     audio[audio_stream].append(opts)
             elif (not pheader1.match(message)) and (not pheader2.match(message)):
                 av_log(NULL, loglevels[level], '%s', msg)
-        audio[audio_stream] = sorted(list(set(audio[audio_stream])))
+        audio[audio_stream] = sorted(audio[audio_stream])
 
     return video, audio, name_map
 
@@ -864,4 +841,4 @@ def convert_to_str(item):
 
         An object identical to the ``item``, but with all strings encoded to utf-8.
     '''
-    return encode_text(item, not PY3)
+    return encode_text(item, False)
