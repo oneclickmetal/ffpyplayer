@@ -25,6 +25,7 @@ cdef:
             int size
             int stream_index
             int flags
+            int64_t duration
         enum AVMediaType:
             AVMEDIA_TYPE_UNKNOWN = -1,  #///< Usually treated as AVMEDIA_TYPE_DATA
             AVMEDIA_TYPE_VIDEO,
@@ -38,9 +39,6 @@ cdef:
         int av_compare_ts(int64_t, AVRational, int64_t, AVRational)
         const char* av_get_media_type_string(AVMediaType)
         const int av_log2(unsigned int)
-        int av_packet_ref(AVPacket *, const AVPacket *)
-        void av_packet_unref(AVPacket *)
-        void av_packet_move_ref(AVPacket *, AVPacket *)
 
     extern from "libavformat/avio.h" nogil:
         int AVIO_FLAG_WRITE
@@ -56,6 +54,17 @@ cdef:
             void *opaque
         int avio_feof(AVIOContext *)
         int64_t avio_tell(AVIOContext *)
+
+    extern from "libavutil/fifo.h" nogil:
+        struct AVFifoBuffer:
+            uint8_t *buffer
+        int av_fifo_space(const AVFifoBuffer *)
+        int av_fifo_grow(AVFifoBuffer *, unsigned int)
+        int av_fifo_generic_write(AVFifoBuffer *, void *, int, int (*)(void*, void*, int))
+        AVFifoBuffer *av_fifo_alloc(unsigned int)
+        int av_fifo_size(const AVFifoBuffer *)
+        int av_fifo_generic_read(AVFifoBuffer *, void *, int, void (*)(void*, void*, int))
+        void av_fifo_freep(AVFifoBuffer **)
 
     extern from "libavutil/eval.h" nogil:
         double av_strtod(const char *, char **)
@@ -331,6 +340,13 @@ cdef:
                       uint8_t *const [], const int[])
         void sws_freeContext(SwsContext *)
 
+    extern from "libavutil/frame.h" nogil:
+        enum AVFrameSideDataType:
+            AV_FRAME_DATA_DISPLAYMATRIX,
+        struct AVFrameSideData:
+            uint8_t *data
+        AVFrameSideData *av_frame_get_side_data(const AVFrame *, AVFrameSideDataType)
+
     extern from "libavutil/opt.h" nogil:
         int AV_OPT_SEARCH_CHILDREN
         int AV_OPT_FLAG_ENCODING_PARAM
@@ -345,8 +361,15 @@ cdef:
         int av_opt_get_int(void *, const char *, int, int64_t *)
         int av_opt_set_int(void *, const char *, int64_t, int)
         int av_opt_set_image_size(void *, const char *, int, int, int)
-        int av_opt_set (void *, const char *, const char *, int)
+        int av_opt_set(void *, const char *, const char *, int)
         const AVOption *av_opt_find(void *, const char *, const char *, int, int)
+
+    extern from "libavcodec/packet.h" nogil:
+        int av_packet_ref(AVPacket *, const AVPacket *)
+        void av_packet_unref(AVPacket *)
+        void av_packet_move_ref(AVPacket *, AVPacket *)
+        AVPacket *av_packet_alloc()
+        void av_packet_free(AVPacket **)
 
     extern from "libavcodec/avfft.h" nogil:
         enum RDFTransformType:
